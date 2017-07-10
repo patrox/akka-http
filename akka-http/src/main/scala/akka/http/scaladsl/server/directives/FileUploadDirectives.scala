@@ -34,8 +34,7 @@ trait FileUploadDirectives {
    */
   def uploadedFile(fieldName: String): Directive1[(FileInfo, File)] =
     extractRequestContext.flatMap { ctx ⇒
-      import ctx.executionContext
-      import ctx.materializer
+      import ctx.{ executionContext, materializer }
 
       fileUpload(fieldName).flatMap {
         case (fileInfo, bytes) ⇒
@@ -85,19 +84,38 @@ trait FileUploadDirectives {
       case Some(tuple) ⇒ provide(tuple)
       case None        ⇒ reject(MissingFormFieldRejection(fieldName))
     }
-}
 
-object FileUploadDirectives extends FileUploadDirectives
+  def fileUploads(): Directive1[Seq[(FileInfo, Source[ByteString, Any])]] =
+    entity(as[Multipart.FormData]).flatMap { formData ⇒
+      extractRequestContext.flatMap { ctx ⇒
+        implicit val mat = ctx.materializer
+        implicit val ec = ctx.executionContext
 
-/**
- * Additional metadata about the file being uploaded/that was uploaded using the [[FileUploadDirectives]]
- *
- * @param fieldName Name of the form field the file was uploaded in
- * @param fileName User specified name of the uploaded file
- * @param contentType Content type of the file
- */
-final case class FileInfo(fieldName: String, fileName: String, contentType: ContentType) extends javadsl.server.directives.FileInfo {
-  override def getFieldName = fieldName
-  override def getFileName = fileName
-  override def getContentType = contentType
+        val onePartSource: Source[(FileInfo, Source[ByteString, Any]), Any] = formData.parts
+          .filter(part ⇒ part.filename.isDefined)
+          .map(part ⇒ (FileInfo(part.name, part.filename.get, part.entity.contentType), part.entity.dataBytes))
+
+        val onePartF = onePartSource.runWith(Sink.seq[(FileInfo, Source[ByteString, Any])])
+
+        onSuccess(onePartF)
+      }
+    }.flatMap(fileUploads ⇒ provide(fileUploads))
+
+  object FileUploadDirectives extends FileUploadDirectives
+
+  /**
+   * Additional metadata about the file being uploaded/that was uploaded using the [[FileUploadDirectives]]
+   *
+   * @param fieldName   Name of the form field the file was uploaded in
+   * @param fileName    User specified name of the uploaded file
+   * @param contentType Content type of the file
+   */
+  final case class FileInfo(fieldName: String, fileName: String, contentType: ContentType) extends javadsl.server.directives.FileInfo {
+    override def getFieldName = fieldName
+
+    override def getFileName = fileName
+
+    override def getContentType = contentType
+  }
+
 }
